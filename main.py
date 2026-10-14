@@ -29,7 +29,12 @@ SETTINGS_FIELDS = [
      "Moves the centered 'Attachment - X' title up. Leave at 0 unless it overlaps other header text (try 5)."),
 ]
 DEFAULT_SETTINGS = {key: getattr(Document, key) for key, _, _ in SETTINGS_FIELDS}
-SETTINGS_FILE = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "PDF Headers", "settings.json")
+
+# Settings and header history are saved per user, outside the project folder
+APP_DATA_DIR = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "PDF Headers")
+SETTINGS_FILE = os.path.join(APP_DATA_DIR, "settings.json")
+HISTORY_FILE = os.path.join(APP_DATA_DIR, "history.json")
+HISTORY_LIMIT = 25 # Number of previously used header sets to remember
 
 
 def load_settings():
@@ -59,6 +64,44 @@ def format_number(value):
 def today_string():
     today = datetime.date.today()
     return f"{today:%B} {today.day}, {today.year}" # e.g. "October 14, 2026"
+
+
+# HEADER FIELDS (key, label, placeholder). Keys match the Report/Attachment constructor arguments.
+HEADER_FIELDS = [
+    ("company_name", "Company name", "e.g. Westlake Vinyls Company"),
+    ("project_name", "Project name", "e.g. HAPF Project Interconnect Duct"),
+    ("document_description", "Document description", "e.g. Detailed Pipe Stress Analysis, Revision 0"),
+    ("date", "Date", f"e.g. {today_string()}"),
+    ("maverick", "Maverick name", f"e.g. {DEFAULT_MAVERICK}"),
+    ("document_name", "Document number", "e.g. MAS-263772-WVC-0925-501"),
+]
+HEADER_KEYS = [key for key, _, _ in HEADER_FIELDS]
+
+
+def load_history():
+    """Return previously used header values, most recent first."""
+    try:
+        with open(HISTORY_FILE, encoding="utf-8") as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(saved, list):
+        return []
+    return [{key: str(item.get(key, "")) for key in HEADER_KEYS} for item in saved if isinstance(item, dict)]
+
+
+def add_to_history(header_info):
+    """Put header_info at the top of the history (moving it up if it was already there)."""
+    entry = {key: header_info[key] for key in HEADER_KEYS}
+    history = [entry] + [h for h in load_history() if h != entry]
+    os.makedirs(APP_DATA_DIR, exist_ok=True)
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(history[:HISTORY_LIMIT], f, indent=2)
+
+
+def history_label(entry):
+    """How a history entry is shown in the 'Previously used' list."""
+    return f"{entry['document_name']}  ·  {entry['document_description']}  ·  {entry['date']}  ·  {entry['project_name']}"
 
 
 def guess_attachment_letter(file_path):
@@ -214,22 +257,24 @@ class App(tk.Tk):
         info = ttk.LabelFrame(tab, text="1. Header information (printed at the top of every page)", padding=8)
         info.pack(fill="x")
         info.columnconfigure(1, weight=1)
-        fields = [
-            ("company_name", "Company name:", "e.g. Westlake Vinyls Company"),
-            ("project_name", "Project name:", "e.g. HAPF Project Interconnect Duct"),
-            ("document_description", "Document description:", "e.g. Detailed Pipe Stress Analysis, Revision 0"),
-            ("date", "Date:", f"e.g. {today_string()}"),
-            ("maverick", "Maverick name:", f"e.g. {DEFAULT_MAVERICK}"),
-            ("document_name", "Document number:", "e.g. MAS-263772-WVC-0925-501"),
-        ]
+
+        # Previously used header values (filled in automatically with the most recent ones)
+        ttk.Label(info, text="Previously used:").grid(row=0, column=0, sticky="w", pady=(0, 6), padx=(0, 8))
+        self.history_combo = ttk.Combobox(info, state="readonly")
+        self.history_combo.grid(row=0, column=1, sticky="ew", pady=(0, 6))
+        self.history_combo.bind("<<ComboboxSelected>>", self.history_selected)
+        ttk.Button(info, text="Clear", width=8, command=self.clear_header_fields).grid(row=0, column=2, padx=(6, 0), pady=(0, 6))
+
         self.header_entries = {}
-        for row, (key, label, placeholder) in enumerate(fields):
-            ttk.Label(info, text=label).grid(row=row, column=0, sticky="w", pady=2, padx=(0, 8))
+        for row, (key, label, placeholder) in enumerate(HEADER_FIELDS, start=1):
+            ttk.Label(info, text=label + ":").grid(row=row, column=0, sticky="w", pady=2, padx=(0, 8))
             entry = PlaceholderEntry(info, placeholder=placeholder)
             entry.grid(row=row, column=1, sticky="ew", pady=2)
             self.header_entries[key] = entry
+            if key == "date":
+                ttk.Button(info, text="Today", width=8, command=lambda: self.header_entries["date"].set(today_string())).grid(row=row, column=2, padx=(6, 0))
         self.header_entries["maverick"].set(DEFAULT_MAVERICK)
-        ttk.Button(info, text="Today", width=8, command=lambda: self.header_entries["date"].set(today_string())).grid(row=3, column=2, padx=(6, 0))
+        self.refresh_history(fill_fields=True)
 
         # Report
         report = ttk.LabelFrame(tab, text="2. Report", padding=8)
@@ -286,6 +331,30 @@ class App(tk.Tk):
 
         # Run
         ttk.Button(tab, text="Add Headers", style="Run.TButton", command=self.run).pack(pady=(12, 0))
+
+    def refresh_history(self, fill_fields=False):
+        """Reload the 'Previously used' list; optionally fill the header fields with the most recent entry."""
+        self.history = load_history()
+        if not self.history:
+            self.history_combo.configure(values=[], state="disabled")
+            self.history_combo.set("None yet - header values are saved here each time you add headers")
+            return
+        self.history_combo.configure(values=[history_label(h) for h in self.history], state="readonly")
+        self.history_combo.current(0)
+        if fill_fields:
+            self.fill_header_fields(self.history[0])
+
+    def history_selected(self, _event=None):
+        self.fill_header_fields(self.history[self.history_combo.current()])
+
+    def fill_header_fields(self, values):
+        for key, entry in self.header_entries.items():
+            entry.set(values.get(key, ""))
+
+    def clear_header_fields(self):
+        self.fill_header_fields({"maverick": DEFAULT_MAVERICK})
+        if self.history:
+            self.history_combo.set("")
 
     def ask_pdf(self, title, multiple=False):
         ask = filedialog.askopenfilenames if multiple else filedialog.askopenfilename
@@ -412,10 +481,7 @@ class App(tk.Tk):
         """Validate the form. Returns (header_info, jobs) or raises ValueError listing every problem found."""
         problems = []
 
-        header_labels = {
-            "company_name": "Company name", "project_name": "Project name", "document_description": "Document description",
-            "date": "Date", "maverick": "Maverick name", "document_name": "Document number",
-        }
+        header_labels = {key: label for key, label, _ in HEADER_FIELDS}
         header_info = {key: entry.get() for key, entry in self.header_entries.items()}
         for key, value in header_info.items():
             if not value:
@@ -524,6 +590,11 @@ class App(tk.Tk):
         if errors:
             messagebox.showerror(APP_TITLE, "Some files could not be processed:\n\n" + "\n\n".join(errors), parent=self)
         if outputs:
+            try:
+                add_to_history(header_info)
+                self.refresh_history()
+            except OSError:
+                pass # Not being able to save history should never stop the user from getting their PDFs
             CombineDialog(self, outputs, header_info["document_name"])
 
     def show_unexpected_error(self, exc_type, exc_value, exc_tb):

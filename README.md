@@ -11,6 +11,9 @@ The first time, it installs what it needs, which takes about a minute and requir
 ## Using it
 
 1. **Header information**: fill in the six header lines. Grey text shows an example of what goes in each box.
+   - The values from your last run are filled in automatically. To reuse an older set (for example, a previous project), pick it from **Previously used**, then change whatever needs updating, such as the date or revision.
+   - **Clear** empties the fields for a new project.
+   - Your last 25 sets of header values are kept, per user, in `%APPDATA%\PDF Headers\history.json`.
 2. **Report**: browse for the report PDF (without headers) and enter the page number of the last roman-numeral page.
    - Page 1 (the cover) gets no header.
    - Pages 2 through that page are numbered i, ii, iii…
